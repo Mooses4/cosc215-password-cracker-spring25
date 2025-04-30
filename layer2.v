@@ -1,75 +1,80 @@
 module layer2(
-  input clk,
-  input rd,             // Guard is ready
-  input ak,             // Guard acknowledgment
-  input [15:0] passcode,// 16-bit passcode to send
-  input En,             // Enable sending
-  output rq,            // Request signal to guard
-  output Dout,          // Data line
-  output done,          // Done sending flag
-  output Rd             // To Layer 1 (read signal control)
+    input clk,
+    input rd,                  // Guard ready signal
+    input ak,                  // Acknowledgment from guard
+    input En,                  // Enable signal
+    input [15:0] passcode,     // Full 16-bit passcode
+    output reg rq,             // Request signal
+    output reg Dout,           // Data line
+    output reg done            // Done sending passcode
 );
 
-  reg [4:0] bit_index;        // 0 to 15 (up to 16 bits)
-  reg start;
-  reg l1_en;
-  reg l1_din;
-  wire l1_rd;
-  wire l1_rq;
-  wire l1_dout;
+    reg [15:0] D;              // Shift register holding passcode
+    reg [3:0] count;           // 4-bit counter (0–15)
+    reg [2:0] state;           // FSM state
 
-  reg [2:0] state;
+    parameter IDLE = 3'b000,
+              LOAD = 3'b001,
+              SETBIT = 3'b010,
+              RQHIGH = 3'b011,
+              WAITAK1 = 3'b100,
+              WAITAK0 = 3'b101,
+              NEXTBIT = 3'b110;
 
-  assign rq = l1_rq;
-  assign Dout = l1_dout;
-  assign Rd = l1_rd;
+    always @(posedge clk) begin
+        case (state)
+            IDLE: begin
+                if (rd && En) begin
+                    count <= 0;
+                    state <= LOAD;
+                    done <= 0;
+                end
+            end
 
-  layer1 l1 (
-      .rq(l1_rq),
-      .ak(ak),
-      .Din(l1_din),
-      .Dout(l1_dout),
-      .En(l1_en),
-      .Rd(l1_rd),
-      .clk(clk)
-  );
+            LOAD: begin
+                D <= passcode;
+                state <= SETBIT;
+            end
 
-  assign done = (state == 3'b011);
+            SETBIT: begin
+                Dout <= D[15];    // MSB first
+                done <= 0;
+                rq <= 1;
+                state <= RQHIGH;
+            end
 
-  always @(posedge clk) begin
-      case (state)
-          3'b000: begin
-              bit_index <= 0;
-              l1_en <= 0;
-              start <= 0;
-              if (rd && En)
-                  state <= 3'b001;
-          end
+            RQHIGH: begin
+                if (ak)
+                    state <= WAITAK1;
+            end
 
-          3'b001: begin
-              l1_din <= passcode[15 - bit_index]; // Big-endian: MSB first
-              l1_en <= 1;
-              state <= 3'b010;
-          end
+            WAITAK1: begin
+                if (!ak)
+                    state <= WAITAK0;
+            end
 
-          3'b010: begin
-              // Wait for Layer 1 to finish transmission
-              if (l1_rd == 1) begin
-                  l1_en <= 0;
-                  if (bit_index == 15)
-                      state <= 3'b011; // Done sending
-                  else begin
-                      bit_index <= bit_index + 1;
-                      state <= 3'b001;
-                  end
-              end
-          end
+            WAITAK0: begin
+                rq <= 0;
+                done <= 1;
+                state <= NEXTBIT;
+            end
 
-          3'b011: begin
-              // Finished sending all bits
-              if (!rd)
-                  state <= 3'b000;
-          end
-      endcase
-  end
+            NEXTBIT: begin
+                count <= count + 1;
+                D <= D << 1;     // Shift to next MSB
+                if (count == 15)
+                    state <= IDLE;
+                else
+                    state <= SETBIT;
+            end
+        endcase
+    end
+
+    initial begin
+        rq = 0;
+        Dout = 0;
+        done = 0;
+        count = 0;
+        state = IDLE;
+    end
 endmodule
